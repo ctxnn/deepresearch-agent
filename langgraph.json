@@ -1,0 +1,10 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "scoping_agent": "./research_agent_scope.py:scope_research",
+    "research_agent": "./research_agent.py:researcher_agent",
+    "supervisor_agent": "./multi_agent_supervisor.py:supervisor_agent",
+    "full_agent": "./research_agent_full.py:agent"
+  },
+  "env": ".env"
+}
