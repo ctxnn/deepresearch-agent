@@ -360,7 +360,11 @@ def summarize_webpage_content(webpage_content: str) -> str:
         return formatted_summary
 
     except Exception as e:
-        print(f"Failed to summarize webpage: {str(e)}")
+        failed_gen = ""
+        body = getattr(e, "body", None)
+        if body and isinstance(body, dict):
+            failed_gen = body.get("error", {}).get("failed_generation", "")
+        print(f"Failed to summarize webpage: {str(e)} | Failed gen: {failed_gen}")
         return webpage_content[:1000] + "..." if len(webpage_content) > 1000 else webpage_content
 
 def deduplicate_search_results(search_results: List[dict]) -> dict:
