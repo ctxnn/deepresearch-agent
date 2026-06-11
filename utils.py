@@ -278,7 +278,8 @@ def invoke_safe_tool_calling(model_with_tools, messages, is_async=False, max_ret
 
 # ===== CONFIGURATION =====
 
-summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+# summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+summarization_model = init_chat_model(model="groq:qwen/qwen3-32b")
 tavily_client = TavilyClient()
 
 # ===== SEARCH FUNCTIONS =====

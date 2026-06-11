@@ -15,11 +15,12 @@ This document records the changes made to the deep research system codebase to f
 * **Resolution**: Added generic parser recovery helpers inside [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py) that catch the 400 Bad Request error, extract the raw `failed_generation` tool calls, support both OpenAI JSON array and XML structures, clean up invalid escapes, parse with `strict=False` (allowing control characters), convert string booleans to Python booleans, and successfully recover the execution state.
 
 ### 2. Daily Token Limit (TPD) & TPM Bypass via Llama 4 Scout Migration
-* **Issue**: The `llama-3.3-70b-versatile` model has a strict free-tier daily token limit of **100,000 tokens per day (TPD)**, which the user fully exhausted. Additionally, webpage summarization using `llama-3.1-8b-instant` hit a **6,000 tokens per minute (TPM)** limit when webpage content truncation was set to 15,000 characters.
+* **Issue**: The `llama-3.3-70b-versatile` model has a strict free-tier daily token limit of **100,000 tokens per day (TPD)**, which the user fully exhausted. Later, the `meta-llama/llama-4-scout-17b-16e-instruct` model also hit its daily limit of **500,000 tokens per day (TPD)** due to high token consumption.
 * **Resolution**: 
-  1. Migrated the main scoping, supervisor, research, and compression brain models from `llama-3.3-70b-versatile` to `meta-llama/llama-4-scout-17b-16e-instruct` on Groq. The Llama 4 Scout model has a much higher rate limit (30,000 TPM limit) and no strict daily token limits.
-  2. Lowered the webpage content truncation limit (`max_chars`) to **6,000 characters** in webpage summarization.
-  3. **Summarization Model Migration**: Changed the webpage summarization model (`summarization_model` in `utils.py` and `research_agent.py`) from `llama-3.1-8b-instant` to `meta-llama/llama-4-scout-17b-16e-instruct` to completely avoid the 6,000 TPM limit.
+  1. Commented out all Llama model configurations and migrated the scoping, research, compression, and webpage summarization agents to Qwen (`qwen/qwen3-32b`) on Groq. The Qwen model operates on a fresh, independent daily token budget.
+  2. Kept `openai/gpt-oss-120b` for the supervisor and report writing tasks exactly where they were, as they have their own limits and are highly capable.
+  3. Lowered the webpage content truncation limit (`max_chars`) to **6,000 characters** in webpage summarization.
+
 
 ### 3. Multi-turn Conversation Memory (Amnesia Fix)
 * **Issue**: The interactive CLI scoping conversation forgot the context of the user query after every turn. This occurred because all LangGraph agents were compiled without a state checkpointer, causing LangGraph to drop all conversation history across separate `.astream()` calls.
@@ -49,24 +50,24 @@ This document records the changes made to the deep research system codebase to f
 
 * **Applied Safeguards**:
   * Used `invoke_safe_structured_output` inside `summarize_webpage_content` to make webpage summarization bulletproof.
-  * Switched `summarization_model` to `groq:meta-llama/llama-4-scout-17b-16e-instruct` to bypass the 6,000 TPM rate limit of `llama-3.1-8b-instant`.
+  * Switched `summarization_model` to `groq:qwen/qwen3-32b` (with Llama 4 Scout commented out) to bypass rate limit blocks.
 * **Lowered Truncation Length**:
-  * Changed webpage content truncation size (`max_chars`) to **6000** to stay within the 6,000 TPM limit of `llama-3.1-8b-instant`.
+  * Changed webpage content truncation size (`max_chars`) to **6000** to stay within the limits.
 * **Removed Stray Prints**:
   * Replaced the asynchronous stdout truncation log `print(f"⚠️ Truncating massive webpage...")` with a comment to perform truncation silently and prevent clobbering the CLI prompt layout.
 
 ### 2. [research_agent_scope.py](file:///Users/chiragtaneja/Codes/repos/reisearch/research_agent_scope.py)
-* Switched scoping model to `groq:meta-llama/llama-4-scout-17b-16e-instruct`.
+* Switched scoping model to `groq:qwen/qwen3-32b` (with Llama 4 Scout commented out).
 * Wrapped scoping model structured output calls with `invoke_safe_structured_output`.
 * Compiled the `scope_research` graph with `checkpointer=MemorySaver()`.
 
 ### 3. [research_agent.py](file:///Users/chiragtaneja/Codes/repos/reisearch/research_agent.py)
-* Switched research, compression, and summarization models to `groq:meta-llama/llama-4-scout-17b-16e-instruct`.
+* Switched research, compression, and summarization models to `groq:qwen/qwen3-32b` (with Llama 4 Scout commented out).
 * Wrapped `model_with_tools.invoke` calls inside `llm_call` using `invoke_safe_tool_calling`.
 * Compiled the `researcher_agent` graph with `checkpointer=MemorySaver()`.
 
 ### 4. [research_agent_mcp.py](file:///Users/chiragtaneja/Codes/repos/reisearch/research_agent_mcp.py)
-* Switched research and compression models to `groq:meta-llama/llama-4-scout-17b-16e-instruct`.
+* Switched research and compression models to `groq:qwen/qwen3-32b` (with Llama 4 Scout commented out).
 * Wrapped `model_with_tools.invoke` calls inside `llm_call` using `invoke_safe_tool_calling`.
 * Compiled the `agent_mcp` graph with `checkpointer=MemorySaver()`.
 

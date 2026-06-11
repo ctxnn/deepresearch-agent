@@ -31,7 +31,8 @@ def get_today_str() -> str:
 # ===== CONFIGURATION =====
 
 # Initialize model
-model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.0)
+# model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.0)
+model = init_chat_model(model="groq:qwen/qwen3-32b", temperature=0.0)
 
 # ===== WORKFLOW NODES =====
 
