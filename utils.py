@@ -73,17 +73,46 @@ def invoke_safe_structured_output(model, schema, messages, max_retries=3, delay=
                     except Exception:
                         pass
                     
-                    # Fallback to regex
+                    # Fallback to regex and block extraction
                     if not params:
+                        # 1. Try to find standard tool call XML tag
                         match = re.search(r'<function=[^>]+>(.*?)(?:</function>|$)', failed_generation, re.DOTALL)
-                        json_str = match.group(1).strip() if match else failed_generation.strip()
-                        json_str = json_str.replace("\\'", "'")
-                        try:
-                            params = json.loads(json_str, strict=False)
-                        except Exception:
-                            pass
+                        json_str = None
+                        if match:
+                            json_str = match.group(1).strip()
+                        else:
+                            # 2. Try to find markdown JSON block
+                            match_code_block = re.search(r'```(?:json)?\s*(.*?)\s*```', failed_generation, re.DOTALL)
+                            if match_code_block:
+                                json_str = match_code_block.group(1).strip()
+                            else:
+                                # 3. Extract between first '{' and last '}'
+                                start_idx = failed_generation.find('{')
+                                end_idx = failed_generation.rfind('}')
+                                if start_idx != -1 and end_idx != -1:
+                                    json_str = failed_generation[start_idx:end_idx+1].strip()
+                        
+                        if json_str:
+                            json_str = json_str.replace("\\'", "'")
+                            try:
+                                params = json.loads(json_str, strict=False)
+                            except Exception:
+                                pass
                     
                     if isinstance(params, dict):
+                        # Fuzzy key matching: map model-produced keys to actual schema keys
+                        schema_keys = list(schema.model_fields.keys())
+                        for sk in schema_keys:
+                            if sk not in params:
+                                for pk in list(params.keys()):
+                                    if pk not in schema_keys:
+                                        if sk == 'summary' and any(x in pk.lower() for x in ['summary', 'sum', 'abstract']):
+                                            params[sk] = params.pop(pk)
+                                            break
+                                        elif sk == 'key_excerpts' and any(x in pk.lower() for x in ['excerpt', 'quote', 'cite', 'extraction']):
+                                            params[sk] = params.pop(pk)
+                                            break
+
                         # Clean up parameters for common Pydantic validation issues
                         for k, v in list(params.items()):
                             # 1. Convert string boolean representations to actual booleans
@@ -154,41 +183,60 @@ def invoke_safe_tool_calling(model_with_tools, messages, is_async=False, max_ret
                 failed_generation = failed_generation.strip()
                 tool_calls = []
                 
-                # Try parsing as JSON array/object directly
+                # Try parsing as JSON array/object directly (with block extraction if needed)
                 try:
-                    data = json.loads(failed_generation)
-                    calls = data if isinstance(data, list) else [data]
-                    for call in calls:
-                        if isinstance(call, dict):
-                            tool_name = call.get("name")
-                            args = call.get("parameters") or call.get("args") or call
-                            if tool_name and isinstance(args, dict):
-                                # Clean up arguments
-                                for k, v in list(args.items()):
-                                    if isinstance(v, str):
-                                        if v.lower() == "true":
-                                            args[k] = True
-                                        elif v.lower() == "false":
-                                            args[k] = False
-                                    elif isinstance(v, dict):
-                                        for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
-                                            if sub_k in v and isinstance(v[sub_k], str):
-                                                args[k] = v[sub_k]
-                                                break
-                                        else:
-                                            for sub_v in v.values():
-                                                if isinstance(sub_v, str):
-                                                    args[k] = sub_v
+                    data = None
+                    try:
+                        data = json.loads(failed_generation)
+                    except Exception:
+                        # Extract code block or first bracketed section
+                        match_code_block = re.search(r'```(?:json)?\s*(.*?)\s*```', failed_generation, re.DOTALL)
+                        json_str = None
+                        if match_code_block:
+                            json_str = match_code_block.group(1).strip()
+                        else:
+                            start_idx = failed_generation.find('[') if failed_generation.find('[') < failed_generation.find('{') and failed_generation.find('[') != -1 else failed_generation.find('{')
+                            end_idx = failed_generation.rfind(']') if failed_generation.rfind(']') > failed_generation.rfind('}') and failed_generation.rfind(']') != -1 else failed_generation.rfind('}')
+                            if start_idx != -1 and end_idx != -1:
+                                json_str = failed_generation[start_idx:end_idx+1].strip()
+                        
+                        if json_str:
+                            json_str = json_str.replace("\\'", "'")
+                            data = json.loads(json_str, strict=False)
+                    
+                    if data:
+                        calls = data if isinstance(data, list) else [data]
+                        for call in calls:
+                            if isinstance(call, dict):
+                                tool_name = call.get("name")
+                                args = call.get("parameters") or call.get("args") or call
+                                if tool_name and isinstance(args, dict):
+                                    # Clean up arguments
+                                    for k, v in list(args.items()):
+                                        if isinstance(v, str):
+                                            if v.lower() == "true":
+                                                args[k] = True
+                                            elif v.lower() == "false":
+                                                args[k] = False
+                                        elif isinstance(v, dict):
+                                            for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
+                                                if sub_k in v and isinstance(v[sub_k], str):
+                                                    args[k] = v[sub_k]
                                                     break
-                                tool_calls.append({
-                                    "name": tool_name,
-                                    "args": args,
-                                    "id": "call_" + uuid.uuid4().hex[:12]
-                                })
+                                            else:
+                                                for sub_v in v.values():
+                                                    if isinstance(sub_v, str):
+                                                        args[k] = sub_v
+                                                        break
+                                    tool_calls.append({
+                                        "name": tool_name,
+                                        "args": args,
+                                        "id": "call_" + uuid.uuid4().hex[:12]
+                                    })
                 except Exception:
                     pass
                 
-                # Fallback to regex
+                # Fallback to regex (XML format)
                 if not tool_calls:
                     matches = re.finditer(r'<function=([^>]+)>(.*?)(?:</function>|$)', failed_generation, re.DOTALL)
                     for match in matches:
