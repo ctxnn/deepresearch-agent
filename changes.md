@@ -33,14 +33,20 @@ This document records the changes made to the deep research system codebase to f
   3. Real-time logging of entering nodes, starting tools, completed tools, and generated thoughts.
   4. **Optional Trace Logs via `/show-logs`**: Added a toggle command `/show-logs` in the interactive CLI to let users enable/disable verbose trace logs on the fly. When logs are turned OFF, the timer and current step spinner continue ticking normally, but the detailed stdout messages are hidden.
 
+### 5. Auto-Retry and Backoff Resilience
+* **Issue**: Transient rate limits (429) and random formatting errors (400) from the Groq API can cause direct crashes if they occur at the wrong moment.
+* **Resolution**: Added auto-retry logic with exponential backoff inside the structured output and tool calling helpers in [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py). If a request fails, it automatically waits and retries the call up to 3 times. Also imported missing `time` and `asyncio` libraries.
+
 ---
 
 ## 📂 Detailed File Modifications
 
 ### 1. [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py)
 * **Added / Enhanced Helper functions**:
-  * `invoke_safe_structured_output(model, schema, messages)`: Invokes a structured LLM call and cleans up/parses JSON manually in case of Groq API server errors (supporting both XML and OpenAI formats, cleaning stringified booleans, and parsing with `strict=False`).
-  * `invoke_safe_tool_calling(model_with_tools, messages, is_async=False)`: Invokes tool calling sync or async and manually recovers tool calls from `failed_generation` in case of Groq API server errors.
+  * `invoke_safe_structured_output(model, schema, messages, max_retries=3, delay=2.0)`: Invokes a structured LLM call with a retry loop (exponential backoff) and cleans up/parses JSON manually in case of Groq API server errors.
+  * `invoke_safe_tool_calling(model_with_tools, messages, is_async=False, max_retries=3, delay=2.0)`: Invokes tool calling sync or async with a retry loop and manually recovers tool calls from `failed_generation`.
+  * Imported `time` and `asyncio` to support delays during retry loops.
+
 * **Applied Safeguards**:
   * Used `invoke_safe_structured_output` inside `summarize_webpage_content` to make webpage summarization bulletproof.
   * Switched `summarization_model` to `groq:meta-llama/llama-4-scout-17b-16e-instruct` to bypass the 6,000 TPM rate limit of `llama-3.1-8b-instant`.
