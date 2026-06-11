@@ -25,7 +25,7 @@ from reisearch.multi_agent_supervisor import supervisor_agent
 # ===== Config =====
 
 from langchain.chat_models import init_chat_model
-writer_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+writer_model = init_chat_model(model="groq:openai/gpt-oss-120b")
 
 # ===== FINAL REPORT GENERATION =====
 

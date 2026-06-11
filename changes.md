@@ -65,12 +65,12 @@ This document records the changes made to the deep research system codebase to f
 * Compiled the `agent_mcp` graph with `checkpointer=MemorySaver()`.
 
 ### 5. [multi_agent_supervisor.py](file:///Users/chiragtaneja/Codes/repos/reisearch/multi_agent_supervisor.py)
-* Switched supervisor model to `groq:meta-llama/llama-4-scout-17b-16e-instruct`.
+* Switched supervisor model to `groq:openai/gpt-oss-120b` for advanced task routing and delegation.
 * Wrapped `supervisor_model_with_tools.ainvoke` call inside `supervisor` using `invoke_safe_tool_calling`.
 * Compiled the `supervisor_agent` graph with `checkpointer=MemorySaver()`.
 
 ### 6. [research_agent_full.py](file:///Users/chiragtaneja/Codes/repos/reisearch/research_agent_full.py)
-* Switched writing model to `groq:meta-llama/llama-4-scout-17b-16e-instruct`.
+* Switched writing model to `groq:openai/gpt-oss-120b` for high-quality, safe final report generation.
 * Compiled the full `agent` graph with `checkpointer=MemorySaver()`.
 
 ### 7. [cli.py](file:///Users/chiragtaneja/Codes/repos/reisearch/cli.py)
