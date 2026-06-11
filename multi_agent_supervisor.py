@@ -193,28 +193,34 @@ async def supervisor_tools(state: SupervisorState) -> Command[Literal["superviso
                     for tool_call in conduct_research_calls
                 ]
 
-                # Wait for all research to complete
-                tool_results = await asyncio.gather(*coros)
+                # Wait for all research to complete, returning exceptions instead of crashing
+                tool_results = await asyncio.gather(*coros, return_exceptions=True)
 
                 # Format research results as tool messages
                 # Each sub-agent returns compressed research findings in result["compressed_research"]
-                # We write this compressed research as the content of a ToolMessage, which allows
-                # the supervisor to later retrieve these findings via get_notes_from_tool_calls()
-                research_tool_messages = [
-                    ToolMessage(
-                        content=result.get("compressed_research", "Error synthesizing research report"),
-                        name=tool_call["name"],
-                        tool_call_id=tool_call["id"]
-                    ) for result, tool_call in zip(tool_results, conduct_research_calls)
-                ]
+                research_tool_messages = []
+                for result, tool_call in zip(tool_results, conduct_research_calls):
+                    if isinstance(result, Exception):
+                        print(f"⚠️ Sub-agent failed for topic '{tool_call['args']['research_topic']}': {result}")
+                        research_tool_messages.append(
+                            ToolMessage(
+                                content=f"Error: Failed to conduct research on '{tool_call['args']['research_topic']}' due to a transient API error.",
+                                name=tool_call["name"],
+                                tool_call_id=tool_call["id"]
+                            )
+                        )
+                    else:
+                        research_tool_messages.append(
+                            ToolMessage(
+                                content=result.get("compressed_research", "Error synthesizing research report"),
+                                name=tool_call["name"],
+                                tool_call_id=tool_call["id"]
+                            )
+                        )
+                        if "raw_notes" in result and result["raw_notes"]:
+                            all_raw_notes.append("\n".join(result["raw_notes"]))
 
                 tool_messages.extend(research_tool_messages)
-
-                # Aggregate raw notes from all research
-                all_raw_notes = [
-                    "\n".join(result.get("raw_notes", [])) 
-                    for result in tool_results
-                ]
 
         except Exception as e:
             print(f"Error in supervisor tools: {e}")

@@ -40,87 +40,108 @@ def get_current_dir() -> Path:
     except NameError:  # __file__ is not defined
         return Path.cwd()
 
-def invoke_safe_structured_output(model, schema, messages):
+def invoke_safe_structured_output(model, schema, messages, max_retries=3, delay=2.0):
     """Safely invoke a model with structured output, recovering from Groq's parser failures if possible."""
     structured_model = model.with_structured_output(schema)
-    try:
-        return structured_model.invoke(messages)
-    except Exception as e:
-        body = getattr(e, "body", None)
-        if body and isinstance(body, dict):
-            error_info = body.get("error", {})
-            failed_generation = error_info.get("failed_generation", "")
-            if failed_generation:
-                failed_generation = failed_generation.strip()
-                params = None
-                
-                # Try parsing as JSON array/object directly
-                try:
-                    data = json.loads(failed_generation)
-                    if isinstance(data, list) and len(data) > 0:
-                        first_call = data[0]
-                        if isinstance(first_call, dict):
-                            params = first_call.get("parameters") or first_call.get("args") or first_call
-                        else:
-                            params = first_call
-                    elif isinstance(data, dict):
-                        params = data.get("parameters") or data.get("args") or data
-                except Exception:
-                    pass
-                
-                # Fallback to regex
-                if not params:
-                    match = re.search(r'<function=[^>]+>(.*?)(?:</function>|$)', failed_generation, re.DOTALL)
-                    json_str = match.group(1).strip() if match else failed_generation.strip()
-                    json_str = json_str.replace("\\'", "'")
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            return structured_model.invoke(messages)
+        except Exception as e:
+            last_err = e
+            body = getattr(e, "body", None)
+            if body and isinstance(body, dict):
+                error_info = body.get("error", {})
+                failed_generation = error_info.get("failed_generation", "")
+                if failed_generation:
+                    failed_generation = failed_generation.strip()
+                    params = None
+                    
+                    # Try parsing as JSON array/object directly
                     try:
-                        params = json.loads(json_str, strict=False)
+                        data = json.loads(failed_generation)
+                        if isinstance(data, list) and len(data) > 0:
+                            first_call = data[0]
+                            if isinstance(first_call, dict):
+                                params = first_call.get("parameters") or first_call.get("args") or first_call
+                            else:
+                                params = first_call
+                        elif isinstance(data, dict):
+                            params = data.get("parameters") or data.get("args") or data
                     except Exception:
                         pass
-                
-                if isinstance(params, dict):
-                    # Clean up parameters for common Pydantic validation issues
-                    for k, v in list(params.items()):
-                        # 1. Convert string boolean representations to actual booleans
-                        if isinstance(v, str):
-                            if v.lower() == "true":
-                                params[k] = True
-                            elif v.lower() == "false":
-                                params[k] = False
-                        
-                        # 2. Extract string if a dict was returned for a string field
-                        elif isinstance(v, dict):
-                            field = schema.model_fields.get(k)
-                            if field and 'str' in str(field.annotation):
-                                for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
-                                    if sub_k in v and isinstance(v[sub_k], str):
-                                        params[k] = v[sub_k]
-                                        break
-                                else:
-                                    for sub_v in v.values():
-                                        if isinstance(sub_v, str):
-                                            params[k] = sub_v
+                    
+                    # Fallback to regex
+                    if not params:
+                        match = re.search(r'<function=[^>]+>(.*?)(?:</function>|$)', failed_generation, re.DOTALL)
+                        json_str = match.group(1).strip() if match else failed_generation.strip()
+                        json_str = json_str.replace("\\'", "'")
+                        try:
+                            params = json.loads(json_str, strict=False)
+                        except Exception:
+                            pass
+                    
+                    if isinstance(params, dict):
+                        # Clean up parameters for common Pydantic validation issues
+                        for k, v in list(params.items()):
+                            # 1. Convert string boolean representations to actual booleans
+                            if isinstance(v, str):
+                                if v.lower() == "true":
+                                    params[k] = True
+                                elif v.lower() == "false":
+                                    params[k] = False
+                            
+                            # 2. Extract string if a dict was returned for a string field
+                            elif isinstance(v, dict):
+                                field = schema.model_fields.get(k)
+                                if field and 'str' in str(field.annotation):
+                                    for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
+                                        if sub_k in v and isinstance(v[sub_k], str):
+                                            params[k] = v[sub_k]
                                             break
-                    try:
-                        return schema(**params)
-                    except Exception:
-                        pass
-        raise e
+                                    else:
+                                        for sub_v in v.values():
+                                            if isinstance(sub_v, str):
+                                                params[k] = sub_v
+                                                break
+                        try:
+                            return schema(**params)
+                        except Exception:
+                            pass
+            if attempt < max_retries - 1:
+                time.sleep(delay * (attempt + 1))
+    raise last_err
 
-def invoke_safe_tool_calling(model_with_tools, messages, is_async=False):
+def invoke_safe_tool_calling(model_with_tools, messages, is_async=False, max_retries=3, delay=2.0):
     """Safely invoke a tool-bound model, recovering from Groq's parser failures if possible."""
     
     async def _ainvoke():
-        try:
-            return await model_with_tools.ainvoke(messages)
-        except Exception as e:
-            return _recover(e)
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                return await model_with_tools.ainvoke(messages)
+            except Exception as e:
+                last_err = e
+                try:
+                    return _recover(e)
+                except Exception:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay * (attempt + 1))
+        raise last_err
 
     def _invoke():
-        try:
-            return model_with_tools.invoke(messages)
-        except Exception as e:
-            return _recover(e)
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                return model_with_tools.invoke(messages)
+            except Exception as e:
+                last_err = e
+                try:
+                    return _recover(e)
+                except Exception:
+                    if attempt < max_retries - 1:
+                        time.sleep(delay * (attempt + 1))
+        raise last_err
 
     def _recover(e):
         body = getattr(e, "body", None)
