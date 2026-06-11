@@ -7,10 +7,13 @@ including web search capabilities and content summarization tools.
 
 from pathlib import Path
 from datetime import datetime
+import re
+import json
+import uuid
 from typing_extensions import Annotated, List, Literal
 
 from langchain.chat_models import init_chat_model 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool, InjectedToolArg
 from tavily import TavilyClient
@@ -37,9 +40,174 @@ def get_current_dir() -> Path:
     except NameError:  # __file__ is not defined
         return Path.cwd()
 
+def invoke_safe_structured_output(model, schema, messages):
+    """Safely invoke a model with structured output, recovering from Groq's parser failures if possible."""
+    structured_model = model.with_structured_output(schema)
+    try:
+        return structured_model.invoke(messages)
+    except Exception as e:
+        body = getattr(e, "body", None)
+        if body and isinstance(body, dict):
+            error_info = body.get("error", {})
+            failed_generation = error_info.get("failed_generation", "")
+            if failed_generation:
+                failed_generation = failed_generation.strip()
+                params = None
+                
+                # Try parsing as JSON array/object directly
+                try:
+                    data = json.loads(failed_generation)
+                    if isinstance(data, list) and len(data) > 0:
+                        first_call = data[0]
+                        if isinstance(first_call, dict):
+                            params = first_call.get("parameters") or first_call.get("args") or first_call
+                        else:
+                            params = first_call
+                    elif isinstance(data, dict):
+                        params = data.get("parameters") or data.get("args") or data
+                except Exception:
+                    pass
+                
+                # Fallback to regex
+                if not params:
+                    match = re.search(r'<function=[^>]+>(.*?)(?:</function>|$)', failed_generation, re.DOTALL)
+                    json_str = match.group(1).strip() if match else failed_generation.strip()
+                    json_str = json_str.replace("\\'", "'")
+                    try:
+                        params = json.loads(json_str, strict=False)
+                    except Exception:
+                        pass
+                
+                if isinstance(params, dict):
+                    # Clean up parameters for common Pydantic validation issues
+                    for k, v in list(params.items()):
+                        # 1. Convert string boolean representations to actual booleans
+                        if isinstance(v, str):
+                            if v.lower() == "true":
+                                params[k] = True
+                            elif v.lower() == "false":
+                                params[k] = False
+                        
+                        # 2. Extract string if a dict was returned for a string field
+                        elif isinstance(v, dict):
+                            field = schema.model_fields.get(k)
+                            if field and 'str' in str(field.annotation):
+                                for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
+                                    if sub_k in v and isinstance(v[sub_k], str):
+                                        params[k] = v[sub_k]
+                                        break
+                                else:
+                                    for sub_v in v.values():
+                                        if isinstance(sub_v, str):
+                                            params[k] = sub_v
+                                            break
+                    try:
+                        return schema(**params)
+                    except Exception:
+                        pass
+        raise e
+
+def invoke_safe_tool_calling(model_with_tools, messages, is_async=False):
+    """Safely invoke a tool-bound model, recovering from Groq's parser failures if possible."""
+    
+    async def _ainvoke():
+        try:
+            return await model_with_tools.ainvoke(messages)
+        except Exception as e:
+            return _recover(e)
+
+    def _invoke():
+        try:
+            return model_with_tools.invoke(messages)
+        except Exception as e:
+            return _recover(e)
+
+    def _recover(e):
+        body = getattr(e, "body", None)
+        if body and isinstance(body, dict):
+            error_info = body.get("error", {})
+            failed_generation = error_info.get("failed_generation", "")
+            if failed_generation:
+                failed_generation = failed_generation.strip()
+                tool_calls = []
+                
+                # Try parsing as JSON array/object directly
+                try:
+                    data = json.loads(failed_generation)
+                    calls = data if isinstance(data, list) else [data]
+                    for call in calls:
+                        if isinstance(call, dict):
+                            tool_name = call.get("name")
+                            args = call.get("parameters") or call.get("args") or call
+                            if tool_name and isinstance(args, dict):
+                                # Clean up arguments
+                                for k, v in list(args.items()):
+                                    if isinstance(v, str):
+                                        if v.lower() == "true":
+                                            args[k] = True
+                                        elif v.lower() == "false":
+                                            args[k] = False
+                                    elif isinstance(v, dict):
+                                        for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
+                                            if sub_k in v and isinstance(v[sub_k], str):
+                                                args[k] = v[sub_k]
+                                                break
+                                        else:
+                                            for sub_v in v.values():
+                                                if isinstance(sub_v, str):
+                                                    args[k] = sub_v
+                                                    break
+                                tool_calls.append({
+                                    "name": tool_name,
+                                    "args": args,
+                                    "id": "call_" + uuid.uuid4().hex[:12]
+                                })
+                except Exception:
+                    pass
+                
+                # Fallback to regex
+                if not tool_calls:
+                    matches = re.finditer(r'<function=([^>]+)>(.*?)(?:</function>|$)', failed_generation, re.DOTALL)
+                    for match in matches:
+                        tool_name = match.group(1).strip()
+                        json_str = match.group(2).strip()
+                        json_str = json_str.replace("\\'", "'")
+                        try:
+                            data = json.loads(json_str, strict=False)
+                            if isinstance(data, dict):
+                                for k, v in list(data.items()):
+                                    if isinstance(v, str):
+                                        if v.lower() == "true":
+                                            data[k] = True
+                                        elif v.lower() == "false":
+                                            data[k] = False
+                                    elif isinstance(v, dict):
+                                        for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
+                                            if sub_k in v and isinstance(v[sub_k], str):
+                                                data[k] = v[sub_k]
+                                                break
+                                        else:
+                                            for sub_v in v.values():
+                                                if isinstance(sub_v, str):
+                                                    data[k] = sub_v
+                                                    break
+                                tool_calls.append({
+                                    "name": tool_name,
+                                    "args": data,
+                                    "id": "call_" + uuid.uuid4().hex[:12]
+                                })
+                        except Exception:
+                            pass
+                
+                if tool_calls:
+                    return AIMessage(content="", tool_calls=tool_calls)
+        raise e
+
+    return _ainvoke() if is_async else _invoke()
+
 # ===== CONFIGURATION =====
 
-summarization_model = init_chat_model(model="groq:llama-3.1-8b-instant")
+summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 tavily_client = TavilyClient()
 
 # ===== SEARCH FUNCTIONS =====
@@ -94,22 +262,23 @@ def summarize_webpage_content(webpage_content: str) -> str:
     # 15,000 characters is roughly 3,500 tokens. By truncating at this limit, 
     # we leave plenty of safe headroom so the sub-agents never crash!
     # =========================================================================
-    max_chars = 15000
+    max_chars = 6000
     if len(webpage_content) > max_chars:
-        print(f"⚠️ Truncating massive webpage from {len(webpage_content)} to {max_chars} chars to prevent Groq TPM errors...")
+        # Silently truncate without printing to avoid clobbering the interactive CLI prompt
         webpage_content = webpage_content[:max_chars] + "\n...[Content Truncated]..."
         
     try:
-        # Set up structured output model for summarization
-        structured_model = summarization_model.with_structured_output(Summary)
-
-        # Generate summary
-        summary = structured_model.invoke([
-            HumanMessage(content=summarize_webpage_prompt.format(
-                webpage_content=webpage_content, 
-                date=get_today_str()
-            ))
-        ])
+        # Generate summary using safe structured output helper
+        summary = invoke_safe_structured_output(
+            summarization_model,
+            Summary,
+            [
+                HumanMessage(content=summarize_webpage_prompt.format(
+                    webpage_content=webpage_content, 
+                    date=get_today_str()
+                ))
+            ]
+        )
 
         # Format summary with clear structure
         formatted_summary = (

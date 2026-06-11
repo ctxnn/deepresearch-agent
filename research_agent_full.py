@@ -14,6 +14,7 @@ input through final report delivery.
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
 
 from reisearch.utils import get_today_str
 from reisearch.prompts import final_report_generation_prompt
@@ -24,7 +25,7 @@ from reisearch.multi_agent_supervisor import supervisor_agent
 # ===== Config =====
 
 from langchain.chat_models import init_chat_model
-writer_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+writer_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 
 # ===== FINAL REPORT GENERATION =====
 
@@ -70,5 +71,5 @@ deep_researcher_builder.add_edge("write_research_brief", "supervisor_subgraph")
 deep_researcher_builder.add_edge("supervisor_subgraph", "final_report_generation")
 deep_researcher_builder.add_edge("final_report_generation", END)
 
-# Compile the full workflow
-agent = deep_researcher_builder.compile()
+# Compile the full workflow with memory checkpointer
+agent = deep_researcher_builder.compile(checkpointer=MemorySaver())

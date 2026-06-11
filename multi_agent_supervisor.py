@@ -24,6 +24,7 @@ from langchain_core.messages import (
 )
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
+from langgraph.checkpoint.memory import MemorySaver
 
 from reisearch.prompts import lead_researcher_prompt
 from reisearch.research_agent import researcher_agent
@@ -32,7 +33,7 @@ from reisearch.state_multi_agent_supervisor import (
     ConductResearch, 
     ResearchComplete
 )
-from reisearch.utils import get_today_str, think_tool
+from reisearch.utils import get_today_str, think_tool, invoke_safe_tool_calling
 
 def get_notes_from_tool_calls(messages: list[BaseMessage]) -> list[str]:
     """Extract research notes from ToolMessage objects in supervisor message history.
@@ -68,7 +69,7 @@ except ImportError:
 # ===== CONFIGURATION =====
 
 supervisor_tools = [ConductResearch, ResearchComplete, think_tool]
-supervisor_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+supervisor_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 supervisor_model_with_tools = supervisor_model.bind_tools(supervisor_tools)
 
 # System constants
@@ -106,8 +107,8 @@ async def supervisor(state: SupervisorState) -> Command[Literal["supervisor_tool
     )
     messages = [SystemMessage(content=system_message)] + supervisor_messages
 
-    # Make decision about next research steps
-    response = await supervisor_model_with_tools.ainvoke(messages)
+    # Make decision about next research steps safely
+    response = await invoke_safe_tool_calling(supervisor_model_with_tools, messages, is_async=True)
 
     return Command(
         goto="supervisor_tools",
@@ -245,4 +246,5 @@ supervisor_builder = StateGraph(SupervisorState)
 supervisor_builder.add_node("supervisor", supervisor)
 supervisor_builder.add_node("supervisor_tools", supervisor_tools)
 supervisor_builder.add_edge(START, "supervisor")
-supervisor_agent = supervisor_builder.compile()
+# Compile supervisor graph with memory checkpointer
+supervisor_agent = supervisor_builder.compile(checkpointer=MemorySaver())

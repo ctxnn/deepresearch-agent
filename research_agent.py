@@ -9,11 +9,12 @@ from pydantic import BaseModel, Field
 from typing_extensions import Literal
 
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, filter_messages
 from langchain.chat_models import init_chat_model
 
 from reisearch.state_research import ResearcherState, ResearcherOutputState
-from reisearch.utils import tavily_search, get_today_str, think_tool
+from reisearch.utils import tavily_search, get_today_str, think_tool, invoke_safe_tool_calling
 from reisearch.prompts import research_agent_prompt, compress_research_system_prompt, compress_research_human_message
 
 # ===== CONFIGURATION =====
@@ -23,10 +24,10 @@ tools = [tavily_search, think_tool]
 tools_by_name = {tool.name: tool for tool in tools}
 
 # Initialize models
-model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 model_with_tools = model.bind_tools(tools)
-summarization_model = init_chat_model(model="groq:llama-3.1-8b-instant")
-compress_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+compress_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 
 # ===== AGENT NODES =====
 
@@ -39,12 +40,12 @@ def llm_call(state: ResearcherState):
 
     Returns updated state with the model's response.
     """
+    response = invoke_safe_tool_calling(
+        model_with_tools,
+        [SystemMessage(content=research_agent_prompt)] + state["researcher_messages"]
+    )
     return {
-        "researcher_messages": [
-            model_with_tools.invoke(
-                [SystemMessage(content=research_agent_prompt)] + state["researcher_messages"]
-            )
-        ]
+        "researcher_messages": [response]
     }
 
 def tool_node(state: ResearcherState):
@@ -140,5 +141,5 @@ agent_builder.add_conditional_edges(
 agent_builder.add_edge("tool_node", "llm_call") # Loop back for more research
 agent_builder.add_edge("compress_research", END)
 
-# Compile the agent
-researcher_agent = agent_builder.compile()
+# Compile the agent with memory checkpointer
+researcher_agent = agent_builder.compile(checkpointer=MemorySaver())

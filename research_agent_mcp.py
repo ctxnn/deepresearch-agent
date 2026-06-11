@@ -22,10 +22,11 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, filter_messages
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.memory import MemorySaver
 
 from reisearch.prompts import research_agent_prompt_with_mcp, compress_research_system_prompt, compress_research_human_message
 from reisearch.state_research import ResearcherState, ResearcherOutputState
-from reisearch.utils import get_today_str, think_tool, get_current_dir
+from reisearch.utils import get_today_str, think_tool, get_current_dir, invoke_safe_tool_calling
 
 # ===== CONFIGURATION =====
 
@@ -53,8 +54,8 @@ def get_mcp_client():
     return _client
 
 # Initialize models
-compress_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
-model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+compress_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 
 # ===== AGENT NODES =====
 
@@ -78,13 +79,12 @@ async def llm_call(state: ResearcherState):
     # Initialize model with tool binding
     model_with_tools = model.bind_tools(tools)
 
-    # Process user input with system prompt
+    response = invoke_safe_tool_calling(
+        model_with_tools,
+        [SystemMessage(content=research_agent_prompt_with_mcp.format(date=get_today_str()))] + state["researcher_messages"]
+    )
     return {
-        "researcher_messages": [
-            model_with_tools.invoke(
-                [SystemMessage(content=research_agent_prompt_with_mcp.format(date=get_today_str()))] + state["researcher_messages"]
-            )
-        ]
+        "researcher_messages": [response]
     }
 
 async def tool_node(state: ResearcherState):
@@ -204,5 +204,5 @@ agent_builder_mcp.add_conditional_edges(
 agent_builder_mcp.add_edge("tool_node", "llm_call")  # Loop back for more processing
 agent_builder_mcp.add_edge("compress_research", END)
 
-# Compile the agent
-agent_mcp = agent_builder_mcp.compile()
+# Compile the agent with memory checkpointer
+agent_mcp = agent_builder_mcp.compile(checkpointer=MemorySaver())
