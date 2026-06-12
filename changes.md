@@ -38,15 +38,35 @@ This document records the changes made to the deep research system codebase to f
 * **Issue**: Transient rate limits (429) and random formatting errors (400) from the Groq API can cause direct crashes if they occur at the wrong moment.
 * **Resolution**: Added auto-retry logic with exponential backoff inside the structured output and tool calling helpers in [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py). If a request fails, it automatically waits and retries the call up to 3 times. Also imported missing `time` and `asyncio` libraries.
 
+### 6. Groq API Error Structure and CLI Exception Display Fixes
+* **Issue**: 
+  1. Groq's parser error response for `failed_generation` sometimes sets `failed_generation` at the root level of the exception's `body` dict, rather than nesting it under `error` (e.g., `body["failed_generation"]` instead of `body["error"]["failed_generation"]`). This caused our parser fallbacks to evaluate to `None` and crash with unhandled exceptions.
+  2. If an exception occurred during the event stream in `cli.py`, the `Live` context manager remained active while printing `console.print(f"[bold red]An error occurred...[/]")`. Because `Live` is running on the terminal, it could hide, swallow, or overwrite the printed error when the context manager exited, returning the user straight to the prompt without displaying the error.
+* **Resolution**: 
+  1. Updated `invoke_safe_structured_output`, `invoke_safe_tool_calling`, and `summarize_webpage_content` in [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py) to extract `failed_generation` from both the root level of the `body` and under the `error` key.
+  2. Moved the `try...except` block outside of the `with Live(...)` context manager in [cli.py](file:///Users/chiragtaneja/Codes/repos/reisearch/cli.py). This ensures `Live` exits first (cleaning and restoring standard stdout/stderr) before printing error tracebacks.
+
+### 7. Pydantic Validation Coercion and Final Report Tool-Hallucination Recovery
+* **Issue**:
+  1. **Schema Validation Failure**: Models (like Qwen on Groq) sometimes return list/array parameters for fields expecting strings (e.g., passing a JSON array of strings for `key_excerpts` inside the `Summary` schema, which expects a single `str`). This triggers a `400 Bad Request (tool call validation failed)` on the Groq server.
+  2. **JSON unwrapping**: When parsing custom tool call wrappers like `<tool_call>`, the extracted JSON structure contains `"arguments"` or `"parameters"`. If we didn't unwrap these, the keys did not match the Pydantic schema structure.
+  3. **Tool choice hallucination**: During the final report generation node (which does not use tools), the model would sometimes hallucinate calling tools (like `repo_browser.search`), causing Groq to throw `Tool choice is none, but model called a tool`.
+* **Resolution**:
+  1. Updated `invoke_safe_structured_output` fallback parser in [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py) to automatically unwrap `"arguments"`, `"parameters"`, and `"args"`.
+  2. Enhanced parameter cleaning in [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py) to check if a schema field expects `str` but a `list` was returned, and automatically convert the list to a newline-joined string.
+  3. Wrapped final report generation in [research_agent_full.py](file:///Users/chiragtaneja/Codes/repos/reisearch/research_agent_full.py) in a retry block and injected a strict `SystemMessage` instructing the model that it does not have tool access and must rely solely on the findings.
+
 ---
 
 ## 📂 Detailed File Modifications
+
 
 ### 1. [utils.py](file:///Users/chiragtaneja/Codes/repos/reisearch/utils.py)
 * **Added / Enhanced Helper functions**:
   * `invoke_safe_structured_output(model, schema, messages, max_retries=3, delay=2.0)`: Invokes a structured LLM call with a retry loop (exponential backoff) and cleans up/parses JSON manually in case of Groq API server errors.
   * `invoke_safe_tool_calling(model_with_tools, messages, is_async=False, max_retries=3, delay=2.0)`: Invokes tool calling sync or async with a retry loop and manually recovers tool calls from `failed_generation`.
   * Imported `time` and `asyncio` to support delays during retry loops.
+  * **Groq API Error Structure Fix**: Updated `invoke_safe_structured_output`, `invoke_safe_tool_calling` (`_recover` helper), and `summarize_webpage_content` to fetch `failed_generation` from both the root level of `body` and under the `error` sub-dictionary.
 
 * **Applied Safeguards**:
   * Used `invoke_safe_structured_output` inside `summarize_webpage_content` to make webpage summarization bulletproof.
@@ -94,6 +114,7 @@ This document records the changes made to the deep research system codebase to f
 * Added `/show-logs` command to toggle the visibility of trace logs dynamically.
 * Handled the toggle state in `run_agent` to conditionally output detailed thoughts, tool calls, and node entry logs.
 * Updated `/help` output to show the current ON/OFF status of the logs.
+* **Terminal Context Recovery**: Moved the `try...except` block outside of the `with Live(...)` context manager to ensure `Live` is completely closed and standard terminal attributes are restored before printing exceptions to the screen using `console.print`.
 
 ---
 

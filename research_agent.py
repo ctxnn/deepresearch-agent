@@ -24,13 +24,20 @@ tools = [tavily_search, think_tool]
 tools_by_name = {tool.name: tool for tool in tools}
 
 # Initialize models
-# model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 model = init_chat_model(model="groq:qwen/qwen3-32b")
+# model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+# model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+# model = init_chat_model(model="groq:openai/gpt-oss-20b")
 model_with_tools = model.bind_tools(tools)
-# summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 summarization_model = init_chat_model(model="groq:qwen/qwen3-32b")
+# summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+# summarization_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+# summarization_model = init_chat_model(model="groq:openai/gpt-oss-20b")
+compress_model = init_chat_model(model="groq:llama-3.1-8b-instant")
+# compress_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
 # compress_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
-compress_model = init_chat_model(model="groq:qwen/qwen3-32b")
+# compress_model = init_chat_model(model="groq:qwen/qwen3-32b")
+# compress_model = init_chat_model(model="groq:openai/gpt-oss-20b")
 
 # ===== AGENT NODES =====
 

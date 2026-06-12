@@ -12,7 +12,8 @@ The system orchestrates the complete research workflow from initial user
 input through final report delivery.
 """
 
-from langchain_core.messages import HumanMessage
+import asyncio
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -25,7 +26,7 @@ from reisearch.multi_agent_supervisor import supervisor_agent
 # ===== Config =====
 
 from langchain.chat_models import init_chat_model
-writer_model = init_chat_model(model="groq:openai/gpt-oss-120b")
+writer_model = init_chat_model(model="groq:openai/gpt-oss-20b")
 
 # ===== FINAL REPORT GENERATION =====
 
@@ -48,12 +49,33 @@ async def final_report_generation(state: AgentState):
         date=get_today_str()
     )
 
-    final_report = await writer_model.ainvoke([HumanMessage(content=final_report_prompt)])
+    system_instruction = (
+        "You are a professional report writer. You do NOT have access to any tools, commands, "
+        "or external search engines. You must write the final report using ONLY the provided findings. "
+        "Do NOT attempt to invoke any tools or output JSON function calls."
+    )
+
+    last_err = None
+    final_report = None
+    for attempt in range(3):
+        try:
+            final_report = await writer_model.ainvoke([
+                SystemMessage(content=system_instruction),
+                HumanMessage(content=final_report_prompt)
+            ])
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                await asyncio.sleep(2.0 * (attempt + 1))
+    else:
+        raise last_err
 
     return {
         "final_report": final_report.content, 
         "messages": ["Here is the final report: " + final_report.content],
     }
+
 
 # ===== GRAPH CONSTRUCTION =====
 # Build the overall workflow

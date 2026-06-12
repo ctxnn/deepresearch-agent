@@ -69,7 +69,7 @@ except ImportError:
 # ===== CONFIGURATION =====
 
 supervisor_tools = [ConductResearch, ResearchComplete, think_tool]
-supervisor_model = init_chat_model(model="groq:openai/gpt-oss-120b")
+supervisor_model = init_chat_model(model="groq:openai/gpt-oss-20b")
 supervisor_model_with_tools = supervisor_model.bind_tools(supervisor_tools)
 
 # System constants

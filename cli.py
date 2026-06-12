@@ -51,70 +51,72 @@ async def run_agent(agent_name, query, session_id, show_logs=True):
     status = {"node": "Initializing", "details": ""}
     start_time = time.time()
     
-    with Live(Spinner("dots", text=f"Agent '{agent_name}' is working... [bold green]0s[/]"), refresh_per_second=10) as live:
-        timer_task = asyncio.create_task(update_spinner_timer(live, agent_name, start_time, status))
-        
-        try:
-            async for event in agent.astream_events(initial_state, version="v2", config={"configurable": {"thread_id": session_id}}):
-                kind = event.get("event")
-                name = event.get("name")
-                
-                if kind == "on_chain_start":
-                    metadata = event.get("metadata", {})
-                    langgraph_node = metadata.get("langgraph_node")
-                    if langgraph_node:
-                        status["node"] = langgraph_node
-                        status["details"] = f"Entering step '{langgraph_node}'"
-                        if show_logs:
-                            live.console.print(f"[dim]➔ Entering step: [bold cyan]{langgraph_node}[/bold cyan][/dim]")
-                        
-                elif kind == "on_chat_model_end":
-                    output = event.get("data", {}).get("output", {})
-                    content = getattr(output, "content", "")
-                    tool_calls = getattr(output, "tool_calls", [])
-                    
-                    if content:
-                        thought_str = content
-                        if len(thought_str) > 150:
-                            thought_str = thought_str[:147] + "..."
-                        status["details"] = f"Thought: {thought_str}"
-                        if show_logs:
-                            live.console.print(f"[dim italic magenta]💭 Thought: {thought_str}[/dim italic magenta]")
-                        
-                    if tool_calls:
-                        for tc in tool_calls:
-                            tool_name = tc.get("name", "UnknownTool")
-                            args_str = str(tc.get("args", {}))
-                            if len(args_str) > 100:
-                                args_str = args_str[:97] + "..."
-                            status["details"] = f"Calling tool: {tool_name}"
-                            if show_logs:
-                                live.console.print(f"[dim cyan]🔧 Calling tool: {tool_name} ({args_str})[/dim cyan]")
-                            
-                elif kind == "on_tool_start":
-                    tool_name = event.get("name", "")
-                    tool_input = str(event.get("data", {}).get("input", ""))
-                    if len(tool_input) > 80:
-                        tool_input = tool_input[:77] + "..."
-                    status["details"] = f"Tool '{tool_name}' starting ({tool_input})"
-                    
-                elif kind == "on_tool_end":
-                    tool_name = event.get("name", "")
-                    status["details"] = f"Tool '{tool_name}' completed"
-                    if show_logs:
-                        live.console.print(f"[dim]✓ Tool {tool_name} finished.[/dim]")
-                    
-                elif kind == "on_chain_end" and name == "LangGraph":
-                    final_state = event.get("data", {}).get("output", {})
-                    
-            timer_task.cancel()
-            live.update(Spinner("dots", text=f"Formatting final output... [bold green]{int(time.time() - start_time)}s[/]"))
-            await asyncio.sleep(0.5)
+    try:
+        with Live(Spinner("dots", text=f"Agent '{agent_name}' is working... [bold green]0s[/]"), refresh_per_second=10) as live:
+            timer_task = asyncio.create_task(update_spinner_timer(live, agent_name, start_time, status))
             
-        except Exception as e:
-            timer_task.cancel()
-            console.print(f"[bold red]An error occurred: {str(e)}[/]")
-            return
+            try:
+                async for event in agent.astream_events(initial_state, version="v2", config={"configurable": {"thread_id": session_id}}):
+                    kind = event.get("event")
+                    name = event.get("name")
+                    
+                    if kind == "on_chain_start":
+                        metadata = event.get("metadata", {})
+                        langgraph_node = metadata.get("langgraph_node")
+                        if langgraph_node:
+                            status["node"] = langgraph_node
+                            status["details"] = f"Entering step '{langgraph_node}'"
+                            if show_logs:
+                                live.console.print(f"[dim]➔ Entering step: [bold cyan]{langgraph_node}[/bold cyan][/dim]")
+                            
+                    elif kind == "on_chat_model_end":
+                        output = event.get("data", {}).get("output", {})
+                        content = getattr(output, "content", "")
+                        tool_calls = getattr(output, "tool_calls", [])
+                        
+                        if content:
+                            thought_str = content
+                            if len(thought_str) > 150:
+                                thought_str = thought_str[:147] + "..."
+                            status["details"] = f"Thought: {thought_str}"
+                            if show_logs:
+                                live.console.print(f"[dim italic magenta]💭 Thought: {thought_str}[/dim italic magenta]")
+                            
+                        if tool_calls:
+                            for tc in tool_calls:
+                                tool_name = tc.get("name", "UnknownTool")
+                                args_str = str(tc.get("args", {}))
+                                if len(args_str) > 100:
+                                    args_str = args_str[:97] + "..."
+                                status["details"] = f"Calling tool: {tool_name}"
+                                if show_logs:
+                                    live.console.print(f"[dim cyan]🔧 Calling tool: {tool_name} ({args_str})[/dim cyan]")
+                                
+                    elif kind == "on_tool_start":
+                        tool_name = event.get("name", "")
+                        tool_input = str(event.get("data", {}).get("input", ""))
+                        if len(tool_input) > 80:
+                            tool_input = tool_input[:77] + "..."
+                        status["details"] = f"Tool '{tool_name}' starting ({tool_input})"
+                        
+                    elif kind == "on_tool_end":
+                        tool_name = event.get("name", "")
+                        status["details"] = f"Tool '{tool_name}' completed"
+                        if show_logs:
+                            live.console.print(f"[dim]✓ Tool {tool_name} finished.[/dim]")
+                        
+                    elif kind == "on_chain_end" and name == "LangGraph":
+                        final_state = event.get("data", {}).get("output", {})
+                        
+                timer_task.cancel()
+                live.update(Spinner("dots", text=f"Formatting final output... [bold green]{int(time.time() - start_time)}s[/]"))
+                await asyncio.sleep(0.5)
+            finally:
+                timer_task.cancel()
+    except Exception as e:
+        console.print(f"[bold red]An error occurred: {str(e)}[/]")
+        return
+
 
     # Print final state gracefully
     console.print()

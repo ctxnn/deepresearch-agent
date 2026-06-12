@@ -42,19 +42,117 @@ def get_current_dir() -> Path:
     except NameError:  # __file__ is not defined
         return Path.cwd()
 
+def clean_and_validate_params(schema, params: dict) -> dict:
+    """Clean and validate dictionary parameters against Pydantic schema."""
+    schema_keys = list(schema.model_fields.keys())
+    for sk in schema_keys:
+        if sk not in params:
+            for pk in list(params.keys()):
+                if pk not in schema_keys:
+                    if sk == 'summary' and any(x in pk.lower() for x in ['summary', 'sum', 'abstract']):
+                        params[sk] = params.pop(pk)
+                        break
+                    elif sk == 'key_excerpts' and any(x in pk.lower() for x in ['excerpt', 'quote', 'cite', 'extraction']):
+                        params[sk] = params.pop(pk)
+                        break
+                    elif sk == 'research_brief' and any(x in pk.lower() for x in ['brief', 'question', 'topic', 'query']):
+                        params[sk] = params.pop(pk)
+                        break
+
+    # Clean up parameters for common Pydantic validation issues
+    for k, v in list(params.items()):
+        # 1. Convert string boolean representations to actual booleans
+        if isinstance(v, str):
+            if v.lower() == "true":
+                params[k] = True
+            elif v.lower() == "false":
+                params[k] = False
+        
+        # 2. Extract string if a dict was returned for a string field
+        elif isinstance(v, dict):
+            field = schema.model_fields.get(k)
+            if field and 'str' in str(field.annotation):
+                for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
+                    if sub_k in v and isinstance(v[sub_k], str):
+                        params[k] = v[sub_k]
+                        break
+                else:
+                    for sub_v in v.values():
+                        if isinstance(sub_v, str):
+                            params[k] = sub_v
+                            break
+        
+        # 3. Convert list/array to string if a list was returned for a string field
+        elif isinstance(v, list):
+            field = schema.model_fields.get(k)
+            if field and (field.annotation is str or 'str' in str(field.annotation)) and not any(x in str(field.annotation).lower() for x in ['list', 'sequence', 'seq', 'array', 'vector']):
+                params[k] = "\n".join(str(item) for item in v)
+                
+    return params
+
 def invoke_safe_structured_output(model, schema, messages, max_retries=3, delay=2.0):
     """Safely invoke a model with structured output, recovering from Groq's parser failures if possible."""
-    structured_model = model.with_structured_output(schema)
     last_err = None
     for attempt in range(max_retries):
         try:
+            structured_model = model.with_structured_output(schema)
             return structured_model.invoke(messages)
         except Exception as e:
             last_err = e
+            
+            # Try JSON mode fallback first before parsing failed_generation
+            try:
+                has_json_word = False
+                for msg in messages:
+                    if "json" in str(msg.content).lower():
+                        has_json_word = True
+                        break
+                
+                json_messages = list(messages)
+                if not has_json_word:
+                    if json_messages:
+                        last_msg = json_messages[-1]
+                        new_content = str(last_msg.content) + "\nRespond in JSON format."
+                        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+                        if isinstance(last_msg, HumanMessage):
+                            json_messages[-1] = HumanMessage(content=new_content)
+                        elif isinstance(last_msg, AIMessage):
+                            json_messages[-1] = AIMessage(content=new_content)
+                        elif isinstance(last_msg, SystemMessage):
+                            json_messages[-1] = SystemMessage(content=new_content)
+                
+                json_model = model.with_structured_output(schema, method="json_mode")
+                try:
+                    return json_model.invoke(json_messages)
+                except Exception as json_err:
+                    llm_output = getattr(json_err, "llm_output", None)
+                    if llm_output and isinstance(llm_output, str):
+                        try:
+                            json_str = llm_output.strip()
+                            start_idx = json_str.find('{')
+                            end_idx = json_str.rfind('}')
+                            if start_idx != -1 and end_idx != -1:
+                                json_str = json_str[start_idx:end_idx+1].strip()
+                            
+                            params = json.loads(json_str, strict=False)
+                            if isinstance(params, dict):
+                                params = params.get("arguments") or params.get("parameters") or params.get("args") or params
+                                if isinstance(params, dict):
+                                    params = clean_and_validate_params(schema, params)
+                                    return schema(**params)
+                        except Exception:
+                            pass
+                    # If JSON mode recovery failed, let it fall through to original error recovery
+            except Exception:
+                pass
+
             body = getattr(e, "body", None)
             if body and isinstance(body, dict):
-                error_info = body.get("error", {})
-                failed_generation = error_info.get("failed_generation", "")
+                error_info = body.get("error")
+                failed_generation = body.get("failed_generation")
+                if not failed_generation and isinstance(error_info, dict):
+                    failed_generation = error_info.get("failed_generation")
+                failed_generation = failed_generation or ""
                 if failed_generation:
                     failed_generation = failed_generation.strip()
                     params = None
@@ -65,11 +163,11 @@ def invoke_safe_structured_output(model, schema, messages, max_retries=3, delay=
                         if isinstance(data, list) and len(data) > 0:
                             first_call = data[0]
                             if isinstance(first_call, dict):
-                                params = first_call.get("parameters") or first_call.get("args") or first_call
+                                params = first_call.get("parameters") or first_call.get("arguments") or first_call.get("args") or first_call
                             else:
                                 params = first_call
                         elif isinstance(data, dict):
-                            params = data.get("parameters") or data.get("args") or data
+                            params = data.get("parameters") or data.get("arguments") or data.get("args") or data
                     except Exception:
                         pass
                     
@@ -95,47 +193,17 @@ def invoke_safe_structured_output(model, schema, messages, max_retries=3, delay=
                         if json_str:
                             json_str = json_str.replace("\\'", "'")
                             try:
-                                params = json.loads(json_str, strict=False)
+                                parsed = json.loads(json_str, strict=False)
+                                if isinstance(parsed, dict):
+                                    params = parsed.get("arguments") or parsed.get("parameters") or parsed.get("args") or parsed
+                                else:
+                                    params = parsed
                             except Exception:
                                 pass
                     
                     if isinstance(params, dict):
-                        # Fuzzy key matching: map model-produced keys to actual schema keys
-                        schema_keys = list(schema.model_fields.keys())
-                        for sk in schema_keys:
-                            if sk not in params:
-                                for pk in list(params.keys()):
-                                    if pk not in schema_keys:
-                                        if sk == 'summary' and any(x in pk.lower() for x in ['summary', 'sum', 'abstract']):
-                                            params[sk] = params.pop(pk)
-                                            break
-                                        elif sk == 'key_excerpts' and any(x in pk.lower() for x in ['excerpt', 'quote', 'cite', 'extraction']):
-                                            params[sk] = params.pop(pk)
-                                            break
-
-                        # Clean up parameters for common Pydantic validation issues
-                        for k, v in list(params.items()):
-                            # 1. Convert string boolean representations to actual booleans
-                            if isinstance(v, str):
-                                if v.lower() == "true":
-                                    params[k] = True
-                                elif v.lower() == "false":
-                                    params[k] = False
-                            
-                            # 2. Extract string if a dict was returned for a string field
-                            elif isinstance(v, dict):
-                                field = schema.model_fields.get(k)
-                                if field and 'str' in str(field.annotation):
-                                    for sub_k in ['description', 'brief', 'text', 'value', 'query', 'topic']:
-                                        if sub_k in v and isinstance(v[sub_k], str):
-                                            params[k] = v[sub_k]
-                                            break
-                                    else:
-                                        for sub_v in v.values():
-                                            if isinstance(sub_v, str):
-                                                params[k] = sub_v
-                                                break
                         try:
+                            params = clean_and_validate_params(schema, params)
                             return schema(**params)
                         except Exception:
                             pass
@@ -177,8 +245,11 @@ def invoke_safe_tool_calling(model_with_tools, messages, is_async=False, max_ret
     def _recover(e):
         body = getattr(e, "body", None)
         if body and isinstance(body, dict):
-            error_info = body.get("error", {})
-            failed_generation = error_info.get("failed_generation", "")
+            error_info = body.get("error")
+            failed_generation = body.get("failed_generation")
+            if not failed_generation and isinstance(error_info, dict):
+                failed_generation = error_info.get("failed_generation")
+            failed_generation = failed_generation or ""
             if failed_generation:
                 failed_generation = failed_generation.strip()
                 tool_calls = []
@@ -278,8 +349,11 @@ def invoke_safe_tool_calling(model_with_tools, messages, is_async=False, max_ret
 
 # ===== CONFIGURATION =====
 
-# summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
 summarization_model = init_chat_model(model="groq:qwen/qwen3-32b")
+# summarization_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+# summarization_model = init_chat_model(model="groq:llama-3.1-8b-instant")
+# summarization_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+# summarization_model = init_chat_model(model="groq:openai/gpt-oss-20b")
 tavily_client = TavilyClient()
 
 # ===== SEARCH FUNCTIONS =====
@@ -364,7 +438,11 @@ def summarize_webpage_content(webpage_content: str) -> str:
         failed_gen = ""
         body = getattr(e, "body", None)
         if body and isinstance(body, dict):
-            failed_gen = body.get("error", {}).get("failed_generation", "")
+            error_info = body.get("error")
+            failed_gen = body.get("failed_generation")
+            if not failed_gen and isinstance(error_info, dict):
+                failed_gen = error_info.get("failed_generation")
+            failed_gen = failed_gen or ""
         print(f"Failed to summarize webpage: {str(e)} | Failed gen: {failed_gen}")
         return webpage_content[:1000] + "..." if len(webpage_content) > 1000 else webpage_content
 

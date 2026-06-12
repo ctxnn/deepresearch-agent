@@ -54,10 +54,15 @@ def get_mcp_client():
     return _client
 
 # Initialize models
+compress_model = init_chat_model(model="groq:llama-3.1-8b-instant")
+# compress_model = init_chat_model(model="groq:llama-3.3-70b-versatile")
 # compress_model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
-compress_model = init_chat_model(model="groq:qwen/qwen3-32b")
-# model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+# compress_model = init_chat_model(model="groq:qwen/qwen3-32b")
+# compress_model = init_chat_model(model="groq:openai/gpt-oss-20b")
 model = init_chat_model(model="groq:qwen/qwen3-32b")
+# model = init_chat_model(model="groq:meta-llama/llama-4-scout-17b-16e-instruct")
+# model = init_chat_model(model="groq:llama-3.3-70b-versatile")
+# model = init_chat_model(model="groq:openai/gpt-oss-20b")
 
 # ===== AGENT NODES =====
 
